@@ -1,0 +1,142 @@
+#!/bin/bash
+
+################################################################################
+
+CINDER_MOUNT_IMAGE="cinder/mounter:v1.0"
+
+################################################################################
+usage() {
+  err "Invalid usage. Usage: "
+  err "\t$0 init"
+  err "\t$0 attach <json params>"
+  err "\t$0 detach <mount device>"
+  err "\t$0 mount <mount dir> <mount device> <json params>"
+  err "\t$0 unmount <mount dir>"
+  exit 1
+}
+
+err() {
+  echo -ne $* 1>&2
+}
+
+log() {
+  echo -ne $* >&1
+}
+
+client_container () {
+
+  ################################################################################
+
+  docker run -i --rm \
+    --net=host \
+    --privileged \
+    -e OS_AUTH_URL="http://xx.xx.xx.xx:5000/v2.0" \
+    -e OS_NO_CACHE="1" \
+    -e OS_IDENTITY_API_VERSION="2" \
+    -e OS_REGION_NAME="RegionOne" \
+    -e OS_PROJECT_NAME="admin" \
+    -e OS_USERNAME="admin" \
+    -e OS_PASSWORD="password" \
+    -v /:/rootfs:rshared \
+    -v /dev:/dev:rshared \
+    ${CINDER_MOUNT_IMAGE} "${@}" 2> /dev/null
+}
+
+
+
+attach() {
+  VOLUMENAME=$(echo $1 | jq -r '.volumeName')
+
+  CINDER_ATTACH="$( client_container cinder local-attach ${VOLUMENAME} | sed 's/\r$//')"
+  ATTACHED_DEV="$(echo $CINDER_ATTACH | awk '{ print $11}' )"
+
+  log "{\"status\": \"Success\", \"device\":\"${ATTACHED_DEV}\"}"
+  exit 0
+}
+
+
+detach() {
+  ATTACHED_DEV=$1
+
+  for DEV in `ls /dev/disk/by-path`;
+    do TGTDEV=`readlink -f /dev/disk/by-path/${DEV}`;
+      if [ ${TGTDEV} = ${ATTACHED_DEV} ]; then
+        VOLUMENAME=$(echo ${DEV} | cut -d ":" -f 3 | cut -d "-" -f 2,3,4,5,6)
+      fi
+    done
+
+  CINDER_DETACH="$(client_container cinder local-detach ${VOLUMENAME})"
+
+  log "{\"status\": \"Success\"}"
+  exit 0
+}
+
+
+domount() {
+  MNTPATH=$1
+  ATTACHED_DEV=$2
+  FSTYPE=$(echo $3|jq -r '.["kubernetes.io/fsType"]')
+
+  VOLFSTYPE=`blkid -o udev ${ATTACHED_DEV} 2>/dev/null|grep "ID_FS_TYPE"|cut -d"=" -f2`
+  if [ "${VOLFSTYPE}" == "" ]; then
+    echo y | mkfs -t ${FSTYPE} ${ATTACHED_DEV} >/dev/null 2>&1
+    if [ $? -ne 0 ]; then
+      err "{ \"status\": \"Failure\", \"message\": \"Failed to create fs ${FSTYPE} on device ${ATTACHED_DEV}\"}"
+      exit 1
+    fi
+  fi
+
+  mkdir -p ${MNTPATH} &> /dev/null
+  mount $ATTACHED_DEV $MNTPATH &> /dev/null
+
+  if [ $? -ne 0 ]; then
+    err "{ \"status\": \"Failure\", \"message\": \"Failed to mount device ${ATTACHED_DEV} at ${MNTPATH}\"}"
+      exit 1
+  fi
+  log "{\"status\": \"Success\"}"
+  exit 0
+}
+
+
+unmount() {
+  MNTPATH=$1
+
+  umount ${MNTPATH} &> /dev/null
+
+  log "{\"status\": \"Success\"}"
+}
+
+
+op=$1
+
+if [ "$op" = "init" ]; then
+  docker pull ${CINDER_MOUNT_IMAGE} &> /dev/null
+  log "{\"status\": \"Success\"}"
+  exit 0
+fi
+
+if [ $# -lt 2 ]; then
+  usage
+fi
+
+shift
+
+case "$op" in
+  attach)
+    attach $*
+    ;;
+  detach)
+    detach $*
+    ;;
+  mount)
+    domount $*
+    ;;
+  unmount)
+    unmount $*
+    ;;
+  *)
+    usage
+esac
+
+
+exit 1

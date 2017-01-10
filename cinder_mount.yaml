@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nginx
+spec:
+  containers:
+  - name: nginx
+    image: nginx
+    volumeMounts:
+      - mountPath: /data
+        name: test-cinder
+    ports:
+    - containerPort: 80
+  volumes:
+    - name: test-cinder
+      flexVolume:
+        driver: "cinder"
+        fsType: "ext4"
+        options:
+          volumeName: "f3959db7-13d9-4e5b-8f20-f5cd1be54d9b"
+          size: "1"
